@@ -7,12 +7,11 @@ from owlrl import DeductiveClosure, OWLRL_Semantics
 app = FastAPI()
 
 BASE = Namespace("http://example.org/ai-unified-ontology#")
-
 DB_PATH = "project_state.db"
 
-# -------------------------
-# Database Setup
-# -------------------------
+# =========================
+# DATABASE LAYER
+# =========================
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -48,9 +47,9 @@ def set_db_status(module_name, status):
 
 init_db()
 
-# -------------------------
-# Load Ontology
-# -------------------------
+# =========================
+# ONTOLOGY LOAD
+# =========================
 
 print("Loading ontology...")
 g = Graph()
@@ -66,12 +65,13 @@ print("Ontology ready.")
 
 MCP_PROTOCOL_VERSION = "2025-03-26"
 
-# -------------------------
-# Helpers
-# -------------------------
+# =========================
+# GRAPH HELPERS
+# =========================
 
 def get_all_modules():
-    return [str(m).split("#")[-1] for m in g.subjects(RDF.type, BASE.Module)]
+    return [str(m).split("#")[-1]
+            for m in g.subjects(RDF.type, BASE.Module)]
 
 def get_dependencies(module_name):
     module_uri = BASE[module_name]
@@ -141,7 +141,10 @@ def compute_operational_critical_path():
         if length > max_overall[0]:
             max_overall = (length, path)
 
-    return {"length": max_overall[0], "path": max_overall[1]}
+    return {
+        "length": max_overall[0],
+        "path": max_overall[1]
+    }
 
 def evaluate_project_state():
     if detect_cycles():
@@ -157,9 +160,9 @@ def evaluate_project_state():
 
     return "stalled"
 
-# -------------------------
-# MCP Endpoint
-# -------------------------
+# =========================
+# MCP ENDPOINT
+# =========================
 
 @app.post("/mcp")
 async def mcp(request: Request):
@@ -177,7 +180,7 @@ async def mcp(request: Request):
                 "capabilities": {"tools": {}},
                 "serverInfo": {
                     "name": "ai-mcp-server",
-                    "version": "7.0.0"
+                    "version": "7.1.0"
                 }
             }
         })
@@ -188,11 +191,50 @@ async def mcp(request: Request):
             "id": id,
             "result": {
                 "tools": [
-                    {"name": "update_module_status"},
-                    {"name": "get_project_next_steps"},
-                    {"name": "detect_dependency_cycles"},
-                    {"name": "compute_operational_critical_path"},
-                    {"name": "evaluate_project_state"}
+                    {
+                        "name": "update_module_status",
+                        "description": "Update module status",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "module": {"type": "string"},
+                                "status": {"type": "string"}
+                            },
+                            "required": ["module", "status"]
+                        }
+                    },
+                    {
+                        "name": "get_project_next_steps",
+                        "description": "Return executable modules",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    },
+                    {
+                        "name": "detect_dependency_cycles",
+                        "description": "Detect circular dependencies",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    },
+                    {
+                        "name": "compute_operational_critical_path",
+                        "description": "Compute longest pending dependency path",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    },
+                    {
+                        "name": "evaluate_project_state",
+                        "description": "Evaluate lifecycle state",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    }
                 ]
             }
         })
@@ -203,35 +245,64 @@ async def mcp(request: Request):
 
         if tool == "update_module_status":
             set_db_status(args["module"], args["status"])
-            return JSONResponse({"jsonrpc": "2.0", "id": id,
-                                 "result": {"content": [{"type": "text",
-                                                         "text": "Status updated"}],
-                                            "isError": False}})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text", "text": "Status updated"}],
+                    "isError": False
+                }
+            })
 
         if tool == "get_project_next_steps":
-            return JSONResponse({"jsonrpc": "2.0", "id": id,
-                                 "result": {"content": [{"type": "text",
-                                                         "text": str(compute_next_steps())}],
-                                            "isError": False}})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text",
+                                 "text": str(compute_next_steps())}],
+                    "isError": False
+                }
+            })
 
         if tool == "detect_dependency_cycles":
-            return JSONResponse({"jsonrpc": "2.0", "id": id,
-                                 "result": {"content": [{"type": "text",
-                                                         "text": str(detect_cycles())}],
-                                            "isError": False}})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text",
+                                 "text": str(detect_cycles())}],
+                    "isError": False
+                }
+            })
 
         if tool == "compute_operational_critical_path":
-            return JSONResponse({"jsonrpc": "2.0", "id": id,
-                                 "result": {"content": [{"type": "text",
-                                                         "text": str(compute_operational_critical_path())}],
-                                            "isError": False}})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text",
+                                 "text": str(compute_operational_critical_path())}],
+                    "isError": False
+                }
+            })
 
         if tool == "evaluate_project_state":
-            return JSONResponse({"jsonrpc": "2.0", "id": id,
-                                 "result": {"content": [{"type": "text",
-                                                         "text": evaluate_project_state()}],
-                                            "isError": False}})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text",
+                                 "text": evaluate_project_state()}],
+                    "isError": False
+                }
+            })
 
-    return JSONResponse({"jsonrpc": "2.0", "id": id,
-                         "error": {"code": -32601,
-                                   "message": "Method not found"}})
+    return JSONResponse({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32601,
+            "message": "Method not found"
+        }
+    })
