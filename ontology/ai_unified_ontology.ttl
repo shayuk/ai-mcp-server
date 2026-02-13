@@ -1,0 +1,172 @@
+@prefix : <http://example.org/ai-unified-ontology#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+################################################################################
+### 1. Classes - Core Concepts
+################################################################################
+
+:UserProfile rdf:type owl:Class .
+:Role rdf:type owl:Class .
+:CognitiveStyle rdf:type owl:Class .
+:LanguageMode rdf:type owl:Class .
+:AccuracyRequirement rdf:type owl:Class .
+:ExplanationMode rdf:type owl:Class .
+:InteractionStyle rdf:type owl:Class .
+
+:TaskType rdf:type owl:Class .
+:OutputConstraint rdf:type owl:Class .
+:MemoryDependency rdf:type owl:Class .
+
+################################################################################
+### 2. Technical Domains
+################################################################################
+
+:DevOps rdf:type owl:Class .
+:WebDevelopment rdf:type owl:Class .
+:AIFoundations rdf:type owl:Class .
+:MachineLearningAlgorithms rdf:type owl:Class .
+:NeuralNetworks rdf:type owl:Class .
+:StatisticalFoundations rdf:type owl:Class .
+:DeploymentAndCICD rdf:type owl:Class .
+:CloudInfrastructure rdf:type owl:Class .
+:TestingAndMonitoring rdf:type owl:Class .
+:DataEngineering rdf:type owl:Class .
+:UXFrontendPractices rdf:type owl:Class .
+:SecurityDevSecOps rdf:type owl:Class .
+
+################################################################################
+### 3. Academic Writing
+################################################################################
+
+:AcademicWriting rdf:type owl:Class .
+:ResearchPaperStructure rdf:type owl:Class .
+:LiteratureReview rdf:type owl:Class .
+:MethodologySection rdf:type owl:Class .
+:ResultsSection rdf:type owl:Class .
+:DiscussionSection rdf:type owl:Class .
+:Bibliography rdf:type owl:Class .
+:CriticalIntegration rdf:type owl:Class .
+:PeerJournalQuality rdf:type owl:Class .
+
+################################################################################
+### 4. Validation Cycles
+################################################################################
+
+:ResearchValidationCycle rdf:type owl:Class .
+:ValidationPhase1 rdf:type owl:Class .
+:ValidationPhase2 rdf:type owl:Class .
+:ValidationPhase3 rdf:type owl:Class .
+
+################################################################################
+### 5. Reasoning Rules
+################################################################################
+
+:ReasoningRule rdf:type owl:Class .
+:ResearchOrStatistics rdf:type :ReasoningRule .
+:ArchitectureOrAI rdf:type :ReasoningRule .
+:AskForDebate rdf:type :ReasoningRule .
+:HighStakesAcademic rdf:type :ReasoningRule .
+:UserFrustration rdf:type :ReasoningRule .
+
+################################################################################
+### 6. Object Properties (Relations)
+################################################################################
+
+:hasRole rdf:type owl:ObjectProperty .
+:hasCognitiveStyle rdf:type owl:ObjectProperty .
+:prefersLanguage rdf:type owl:ObjectProperty .
+:requiresAccuracy rdf:type owl:ObjectProperty .
+:usesExplanationMode rdf:type owl:ObjectProperty .
+:hasInteractionStyle rdf:type owl:ObjectProperty .
+:hasMemoryDependency rdf:type owl:ObjectProperty .
+
+:isTaskType rdf:type owl:ObjectProperty .
+:constrains rdf:type owl:ObjectProperty .
+:enforce rdf:type owl:ObjectProperty .
+:trigger rdf:type owl:ObjectProperty .
+:applyRule rdf:type owl:ObjectProperty .
+
+################################################################################
+### 7. Academic Structures Relations
+################################################################################
+
+:hasSection rdf:type owl:ObjectProperty .
+:isStructuredBy rdf:type owl:ObjectProperty .
+:integratesStudies rdf:type owl:ObjectProperty .
+:hasBibliographicReferences rdf:type owl:ObjectProperty .
+:usesCriticalIntegration rdf:type owl:ObjectProperty .
+:requiresValidationCycle rdf:type owl:ObjectProperty .
+:meetsQualityStandard rdf:type owl:ObjectProperty .
+
+################################################################################
+### 8. Profile Assertions
+################################################################################
+
+:User_Profile rdf:type :UserProfile ;
+    :hasRole :Statistician ;
+    :hasCognitiveStyle :AnalyticalStructuralErrorIntolerant ;
+    :prefersLanguage :HebrewDefault ;
+    :requiresAccuracy :Threshold95Percent ;
+    :usesExplanationMode :StepByStep_ELI14 ;
+    :hasInteractionStyle :DirectPeerCritical ;
+    :hasMemoryDependency :CurrentProjectContexts .
+
+################################################################################
+### 9. Academic Writing Structure
+################################################################################
+
+:ResearchPaperStructure :hasSection :LiteratureReview .
+:ResearchPaperStructure :hasSection :MethodologySection .
+:ResearchPaperStructure :hasSection :ResultsSection .
+:ResearchPaperStructure :hasSection :DiscussionSection .
+:ResearchPaperStructure :hasSection :Bibliography .
+:ResearchPaperStructure :usesCriticalIntegration :CriticalIntegration .
+:ResearchPaperStructure :requiresValidationCycle :ResearchValidationCycle .
+
+:ResearchValidationCycle :hasSection :ValidationPhase1 .
+:ResearchValidationCycle :hasSection :ValidationPhase2 .
+:ResearchValidationCycle :hasSection :ValidationPhase3 .
+
+################################################################################
+### 10. Reasoning Properties
+################################################################################
+
+:dependsOn rdf:type owl:ObjectProperty .
+:partOf rdf:type owl:ObjectProperty .
+:prerequisiteFor rdf:type owl:ObjectProperty .
+:relatedTo rdf:type owl:ObjectProperty .
+:refines rdf:type owl:ObjectProperty .
+:requires rdf:type owl:ObjectProperty .
+:supports rdf:type owl:ObjectProperty .
+
+:dependsOn rdf:type owl:TransitiveProperty .
+
+################################################################################
+### 11. Technical Domain Relations
+################################################################################
+
+:DevOps :dependsOn :CloudInfrastructure .
+:DataEngineering :dependsOn :CloudInfrastructure .
+:AIFoundations :relatedTo :MachineLearningAlgorithms .
+:SecurityDevSecOps :relatedTo :DevOps .
+:DeploymentAndCICD :partOf :DevOps .
+:NeuralNetworks :partOf :MachineLearningAlgorithms .
+:DeploymentAndCICD :requires :TestingAndMonitoring .
+:MachineLearningAlgorithms :requires :StatisticalFoundations .
+:WebDevelopment :supports :UXFrontendPractices .
+
+################################################################################
+### 12. Behavioral Rules Labels
+################################################################################
+
+:ResearchOrStatistics rdfs:comment "If task involves research or statistics respond in Hebrew with formal terminology and clarify assumptions." .
+:ArchitectureOrAI rdfs:comment "If task involves architecture or AI system break into ordered steps and explain dependencies explicitly." .
+:AskForDebate rdfs:comment "If user asks for debate generate counter-position before agreement." .
+:HighStakesAcademic rdfs:comment "If high-stakes academic output then require verification and theoretical anchoring." .
+:UserFrustration rdfs:comment "If user frustration detected then increase clarity and reduce abstraction." .
+
+################################################################################
+# End of ai_unified_ontology
+################################################################################
