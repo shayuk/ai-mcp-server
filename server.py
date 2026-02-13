@@ -62,6 +62,16 @@ def detect_cycles():
 
     return any(dfs(node) for node in graph)
 
+def compute_next_steps():
+    ready = []
+    for m in get_all_modules():
+        if get_module_status(m) != BASE.pending:
+            continue
+        deps = get_dependencies(m)
+        if all(get_module_status(d) == BASE.completed for d in deps):
+            ready.append(m)
+    return ready
+
 # -------------------------
 # Operational Critical Path
 # -------------------------
@@ -103,23 +113,29 @@ def compute_operational_critical_path():
     return {"length": max_overall[0], "path": readable}
 
 # -------------------------
-# Evaluate Project State
+# Advanced Project State Evaluation
 # -------------------------
 
 def evaluate_project_state():
     modules = get_all_modules()
-    pending_exists = any(get_module_status(m) == BASE.pending for m in modules)
 
-    project_uri = BASE["UnifiedOntologySystem"]
+    if detect_cycles():
+        return "blocked_by_cycle"
 
-    g.remove((project_uri, BASE.hasStatus, None))
+    pending_modules = [m for m in modules if get_module_status(m) == BASE.pending]
 
-    if not pending_exists:
+    if not pending_modules:
+        project_uri = BASE["UnifiedOntologySystem"]
+        g.remove((project_uri, BASE.hasStatus, None))
         g.add((project_uri, BASE.hasStatus, BASE.completed))
-        return "Project marked as completed"
-    else:
-        g.add((project_uri, BASE.hasStatus, BASE.inProgress))
-        return "Project is in progress"
+        return "completed"
+
+    next_steps = compute_next_steps()
+
+    if next_steps:
+        return "active"
+
+    return "stalled"
 
 # -------------------------
 # MCP Endpoint
@@ -138,7 +154,7 @@ async def mcp(request: Request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "ai-mcp-server",
-                "version": "5.0.0"
+                "version": "6.0.0"
             }
         }))
 
@@ -150,16 +166,17 @@ async def mcp(request: Request):
                 {"name": "get_project_next_steps", "description": "Return executable modules", "inputSchema": {"type": "object", "properties": {}}},
                 {"name": "detect_dependency_cycles", "description": "Detect cycles", "inputSchema": {"type": "object", "properties": {}}},
                 {"name": "compute_operational_critical_path", "description": "Compute longest pending dependency path", "inputSchema": {"type": "object", "properties": {}}},
-                {"name": "evaluate_project_state", "description": "Evaluate and update project status", "inputSchema": {"type": "object", "properties": {}}}
+                {"name": "evaluate_project_state", "description": "Evaluate project lifecycle state", "inputSchema": {"type": "object", "properties": {}}}
             ]
         }))
 
     if method == "tools/call":
         tool = params.get("name")
 
-        if tool == "detect_dependency_cycles":
+        if tool == "evaluate_project_state":
+            result = evaluate_project_state()
             return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": str(detect_cycles())}],
+                "content": [{"type": "text", "text": result}],
                 "isError": False
             }))
 
@@ -175,10 +192,9 @@ async def mcp(request: Request):
                 "isError": False
             }))
 
-        if tool == "evaluate_project_state":
-            result = evaluate_project_state()
+        if tool == "detect_dependency_cycles":
             return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": result}],
+                "content": [{"type": "text", "text": str(detect_cycles())}],
                 "isError": False
             }))
 
@@ -188,13 +204,7 @@ async def mcp(request: Request):
                     "content": [{"type": "text", "text": "Cannot compute next steps: cycle detected"}],
                     "isError": True
                 }))
-            ready = []
-            for m in get_all_modules():
-                if get_module_status(m) != BASE.pending:
-                    continue
-                deps = get_dependencies(m)
-                if all(get_module_status(d) == BASE.completed for d in deps):
-                    ready.append(str(m).split("#")[-1])
+            ready = [str(m).split("#")[-1] for m in compute_next_steps()]
             return JSONResponse(jsonrpc_result(id, {
                 "content": [{"type": "text", "text": str(ready)}],
                 "isError": False
