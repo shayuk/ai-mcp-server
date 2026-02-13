@@ -3,9 +3,6 @@ from fastapi.responses import JSONResponse
 from rdflib import Graph, Namespace, URIRef, RDF
 from owlrl import DeductiveClosure, OWLRL_Semantics
 
-# --------------------------------
-# App Init
-# --------------------------------
 app = FastAPI()
 
 BASE = Namespace("http://example.org/ai-unified-ontology#")
@@ -22,9 +19,6 @@ DeductiveClosure(OWLRL_Semantics).expand(g)
 print(f"Triples after reasoning: {len(g)}")
 print("Ontology ready.")
 
-# --------------------------------
-# MCP Config
-# --------------------------------
 MCP_PROTOCOL_VERSION = "2025-03-26"
 
 def jsonrpc_result(id, result):
@@ -33,47 +27,73 @@ def jsonrpc_result(id, result):
 def jsonrpc_error(id, code, message):
     return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
 
-# --------------------------------
-# Helper Functions
-# --------------------------------
+# -------------------------
+# Helper functions
+# -------------------------
+
 def get_module_status(module_uri):
     for _, _, status in g.triples((module_uri, BASE.hasStatus, None)):
         return status
     return None
 
 def get_dependencies(module_uri):
-    deps = []
-    for _, _, dep in g.triples((module_uri, BASE.dependsOnModule, None)):
-        deps.append(dep)
-    return deps
+    return [dep for _, _, dep in g.triples((module_uri, BASE.dependsOnModule, None))]
 
-# --------------------------------
+def build_dependency_graph():
+    graph = {}
+    for module in g.subjects(RDF.type, BASE.Module):
+        deps = get_dependencies(module)
+        graph[module] = deps
+    return graph
+
+def detect_cycles():
+    graph = build_dependency_graph()
+    visited = set()
+    stack = set()
+    cycles = []
+
+    def dfs(node, path):
+        if node in stack:
+            cycle_start = path.index(node)
+            cycles.append(path[cycle_start:])
+            return
+        if node in visited:
+            return
+
+        visited.add(node)
+        stack.add(node)
+
+        for neighbor in graph.get(node, []):
+            dfs(neighbor, path + [neighbor])
+
+        stack.remove(node)
+
+    for node in graph:
+        dfs(node, [node])
+
+    return cycles
+
+# -------------------------
 # MCP Endpoint
-# --------------------------------
+# -------------------------
+
 @app.post("/mcp")
 async def mcp(request: Request):
     body = await request.json()
-
     method = body.get("method")
     id = body.get("id")
     params = body.get("params", {})
 
-    # -------------------------
-    # Initialize
-    # -------------------------
     if method == "initialize":
         return JSONResponse(jsonrpc_result(id, {
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "ai-mcp-server",
-                "version": "2.0.0"
+                "version": "3.0.0"
             }
         }))
 
-    # -------------------------
-    # List Tools
-    # -------------------------
     if method == "tools/list":
         return JSONResponse(jsonrpc_result(id, {
             "tools": [
@@ -102,7 +122,15 @@ async def mcp(request: Request):
                 },
                 {
                     "name": "get_project_next_steps",
-                    "description": "Return modules ready to execute (pending with completed dependencies)",
+                    "description": "Return modules ready to execute",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "detect_dependency_cycles",
+                    "description": "Detect circular dependencies between modules",
                     "inputSchema": {
                         "type": "object",
                         "properties": {}
@@ -111,15 +139,12 @@ async def mcp(request: Request):
             ]
         }))
 
-    # -------------------------
-    # Tool Call
-    # -------------------------
     if method == "tools/call":
         tool_name = params.get("name")
         args = params.get("arguments", {})
 
         # ---------------------
-        # 1. Get Node Relations
+        # Get Node Relations
         # ---------------------
         if tool_name == "get_node_relations":
             node = args.get("node")
@@ -141,7 +166,7 @@ async def mcp(request: Request):
             }))
 
         # ---------------------
-        # 2. Update Module Status (Dynamic Memory)
+        # Update Module Status
         # ---------------------
         if tool_name == "update_module_status":
             module_name = args.get("module")
@@ -153,43 +178,62 @@ async def mcp(request: Request):
             module_uri = BASE[module_name]
             status_uri = BASE[status_name]
 
-            # remove old status
             g.remove((module_uri, BASE.hasStatus, None))
-
-            # ensure module exists
             g.add((module_uri, RDF.type, BASE.Module))
             g.add((module_uri, BASE.hasStatus, status_uri))
 
             return JSONResponse(jsonrpc_result(id, {
                 "content": [{
                     "type": "text",
-                    "text": f"Module {module_name} updated to status {status_name}"
+                    "text": f"Module {module_name} updated to {status_name}"
                 }],
                 "isError": False
             }))
 
         # ---------------------
-        # 3. Get Project Next Steps
+        # Detect Cycles
+        # ---------------------
+        if tool_name == "detect_dependency_cycles":
+            cycles = detect_cycles()
+
+            readable = []
+            for cycle in cycles:
+                readable.append(
+                    [str(node).split("#")[-1] for node in cycle]
+                )
+
+            return JSONResponse(jsonrpc_result(id, {
+                "content": [{
+                    "type": "text",
+                    "text": str(readable)
+                }],
+                "isError": False
+            }))
+
+        # ---------------------
+        # Get Next Steps
         # ---------------------
         if tool_name == "get_project_next_steps":
+
+            if detect_cycles():
+                return JSONResponse(jsonrpc_result(id, {
+                    "content": [{
+                        "type": "text",
+                        "text": "Cannot compute next steps: circular dependency detected"
+                    }],
+                    "isError": True
+                }))
 
             ready_modules = []
 
             for module in g.subjects(RDF.type, BASE.Module):
-
                 status = get_module_status(module)
 
                 if status != BASE.pending:
                     continue
 
                 deps = get_dependencies(module)
-
-                all_completed = True
-                for dep in deps:
-                    dep_status = get_module_status(dep)
-                    if dep_status != BASE.completed:
-                        all_completed = False
-                        break
+                all_completed = all(get_module_status(dep) == BASE.completed for dep in deps)
 
                 if all_completed:
                     ready_modules.append(str(module).split("#")[-1])
