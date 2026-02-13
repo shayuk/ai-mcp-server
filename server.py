@@ -48,7 +48,7 @@ def set_db_status(module_name, status):
 init_db()
 
 # =========================
-# ONTOLOGY LOAD
+# LOAD ONTOLOGY
 # =========================
 
 print("Loading ontology...")
@@ -108,43 +108,63 @@ def compute_next_steps():
             ready.append(m)
     return ready
 
+# =========================
+# OPERATIONAL CRITICAL PATH (FIXED DIRECTION)
+# =========================
+
 def compute_operational_critical_path():
-    graph = {}
-    for m in get_all_modules():
+    modules = get_all_modules()
+
+    # Build reverse graph: dependency → dependent
+    graph = {m: [] for m in modules}
+
+    for m in modules:
         if get_db_status(m) != "completed":
             deps = [d for d in get_dependencies(m)
                     if get_db_status(d) != "completed"]
-            graph[m] = deps
+            for d in deps:
+                graph[d].append(m)
 
     memo = {}
 
     def longest(node):
         if node in memo:
             return memo[node]
-        deps = graph.get(node, [])
-        if not deps:
+
+        neighbors = graph.get(node, [])
+
+        if not neighbors:
             memo[node] = (1, [node])
             return memo[node]
+
         max_len = 0
         max_path = []
-        for d in deps:
-            length, path = longest(d)
+
+        for n in neighbors:
+            length, path = longest(n)
             if length > max_len:
                 max_len = length
                 max_path = path
+
         memo[node] = (max_len + 1, [node] + max_path)
         return memo[node]
 
     max_overall = (0, [])
+
     for node in graph:
-        length, path = longest(node)
-        if length > max_overall[0]:
-            max_overall = (length, path)
+        if get_db_status(node) != "completed":
+            length, path = longest(node)
+            if length > max_overall[0]:
+                max_overall = (length, path)
 
     return {
         "length": max_overall[0],
         "path": max_overall[1]
     }
+
+# =========================
+# LIFECYCLE STATE
+# =========================
 
 def evaluate_project_state():
     if detect_cycles():
@@ -180,7 +200,7 @@ async def mcp(request: Request):
                 "capabilities": {"tools": {}},
                 "serverInfo": {
                     "name": "ai-mcp-server",
-                    "version": "7.1.0"
+                    "version": "8.0.0"
                 }
             }
         })
