@@ -109,20 +109,24 @@ def compute_next_steps():
     return ready
 
 # =========================
-# OPERATIONAL CRITICAL PATH (FIXED DIRECTION)
+# OPERATIONAL CRITICAL PATH (STRICT)
 # =========================
 
 def compute_operational_critical_path():
-    modules = get_all_modules()
 
-    # Build reverse graph: dependency → dependent
-    graph = {m: [] for m in modules}
+    # Only active (not completed) modules participate
+    active_modules = [
+        m for m in get_all_modules()
+        if get_db_status(m) != "completed"
+    ]
 
-    for m in modules:
-        if get_db_status(m) != "completed":
-            deps = [d for d in get_dependencies(m)
-                    if get_db_status(d) != "completed"]
-            for d in deps:
+    # Build reverse graph dependency → dependent
+    graph = {m: [] for m in active_modules}
+
+    for m in active_modules:
+        deps = get_dependencies(m)
+        for d in deps:
+            if d in active_modules:  # ignore completed nodes entirely
                 graph[d].append(m)
 
     memo = {}
@@ -151,11 +155,10 @@ def compute_operational_critical_path():
 
     max_overall = (0, [])
 
-    for node in graph:
-        if get_db_status(node) != "completed":
-            length, path = longest(node)
-            if length > max_overall[0]:
-                max_overall = (length, path)
+    for node in active_modules:
+        length, path = longest(node)
+        if length > max_overall[0]:
+            max_overall = (length, path)
 
     return {
         "length": max_overall[0],
@@ -167,6 +170,7 @@ def compute_operational_critical_path():
 # =========================
 
 def evaluate_project_state():
+
     if detect_cycles():
         return "blocked_by_cycle"
 
@@ -200,7 +204,7 @@ async def mcp(request: Request):
                 "capabilities": {"tools": {}},
                 "serverInfo": {
                     "name": "ai-mcp-server",
-                    "version": "8.0.0"
+                    "version": "9.0.0"
                 }
             }
         })
