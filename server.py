@@ -28,7 +28,7 @@ def jsonrpc_error(id, code, message):
     return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
 
 # -------------------------
-# Helper Functions
+# Helpers
 # -------------------------
 
 def get_module_status(module):
@@ -39,14 +39,11 @@ def get_module_status(module):
 def get_dependencies(module):
     return [dep for _, _, dep in g.triples((module, BASE.dependsOnModule, None))]
 
-def build_graph():
-    graph = {}
-    for module in g.subjects(RDF.type, BASE.Module):
-        graph[module] = get_dependencies(module)
-    return graph
+def get_all_modules():
+    return list(g.subjects(RDF.type, BASE.Module))
 
 def detect_cycles():
-    graph = build_graph()
+    graph = {m: get_dependencies(m) for m in get_all_modules()}
     visited = set()
     stack = set()
 
@@ -65,38 +62,64 @@ def detect_cycles():
 
     return any(dfs(node) for node in graph)
 
-def compute_critical_path():
-    graph = build_graph()
+# -------------------------
+# Operational Critical Path
+# -------------------------
+
+def compute_operational_critical_path():
+    modules = get_all_modules()
+    graph = {}
+    for m in modules:
+        if get_module_status(m) != BASE.completed:
+            deps = [d for d in get_dependencies(m) if get_module_status(d) != BASE.completed]
+            graph[m] = deps
+
     memo = {}
 
-    def longest_path(node):
+    def longest(node):
         if node in memo:
             return memo[node]
         deps = graph.get(node, [])
         if not deps:
             memo[node] = (1, [node])
             return memo[node]
-        max_length = 0
+        max_len = 0
         max_path = []
-        for dep in deps:
-            length, path = longest_path(dep)
-            if length > max_length:
-                max_length = length
+        for d in deps:
+            length, path = longest(d)
+            if length > max_len:
+                max_len = length
                 max_path = path
-        memo[node] = (max_length + 1, [node] + max_path)
+        memo[node] = (max_len + 1, [node] + max_path)
         return memo[node]
 
     max_overall = (0, [])
     for node in graph:
-        length, path = longest_path(node)
+        length, path = longest(node)
         if length > max_overall[0]:
             max_overall = (length, path)
 
     readable = [str(n).split("#")[-1] for n in max_overall[1]]
-    return {
-        "length": max_overall[0],
-        "path": readable
-    }
+    return {"length": max_overall[0], "path": readable}
+
+# -------------------------
+# Evaluate Project State
+# -------------------------
+
+def evaluate_project_state():
+    modules = get_all_modules()
+    pending_exists = any(get_module_status(m) == BASE.pending for m in modules)
+
+    project_uri = BASE["UnifiedOntologySystem"]
+
+    g.remove((project_uri, BASE.hasStatus, None))
+
+    if not pending_exists:
+        g.add((project_uri, BASE.hasStatus, BASE.completed))
+        return "Project marked as completed"
+    else:
+        g.add((project_uri, BASE.hasStatus, BASE.inProgress))
+        return "Project is in progress"
 
 # -------------------------
 # MCP Endpoint
@@ -115,7 +138,7 @@ async def mcp(request: Request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "ai-mcp-server",
-                "version": "4.0.0"
+                "version": "5.0.0"
             }
         }))
 
@@ -126,29 +149,36 @@ async def mcp(request: Request):
                 {"name": "update_module_status", "description": "Update module status", "inputSchema": {"type": "object", "properties": {"module": {"type": "string"}, "status": {"type": "string"}}, "required": ["module", "status"]}},
                 {"name": "get_project_next_steps", "description": "Return executable modules", "inputSchema": {"type": "object", "properties": {}}},
                 {"name": "detect_dependency_cycles", "description": "Detect cycles", "inputSchema": {"type": "object", "properties": {}}},
-                {"name": "compute_critical_path", "description": "Compute longest dependency path", "inputSchema": {"type": "object", "properties": {}}}
+                {"name": "compute_operational_critical_path", "description": "Compute longest pending dependency path", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "evaluate_project_state", "description": "Evaluate and update project status", "inputSchema": {"type": "object", "properties": {}}}
             ]
         }))
 
     if method == "tools/call":
         tool = params.get("name")
 
-        if tool == "compute_critical_path":
+        if tool == "detect_dependency_cycles":
+            return JSONResponse(jsonrpc_result(id, {
+                "content": [{"type": "text", "text": str(detect_cycles())}],
+                "isError": False
+            }))
+
+        if tool == "compute_operational_critical_path":
             if detect_cycles():
                 return JSONResponse(jsonrpc_result(id, {
-                    "content": [{"type": "text", "text": "Cannot compute critical path: cycle detected"}],
+                    "content": [{"type": "text", "text": "Cannot compute: cycle detected"}],
                     "isError": True
                 }))
-            result = compute_critical_path()
+            result = compute_operational_critical_path()
             return JSONResponse(jsonrpc_result(id, {
                 "content": [{"type": "text", "text": str(result)}],
                 "isError": False
             }))
 
-        if tool == "detect_dependency_cycles":
-            has_cycle = detect_cycles()
+        if tool == "evaluate_project_state":
+            result = evaluate_project_state()
             return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": str(has_cycle)}],
+                "content": [{"type": "text", "text": result}],
                 "isError": False
             }))
 
@@ -159,13 +189,12 @@ async def mcp(request: Request):
                     "isError": True
                 }))
             ready = []
-            for module in g.subjects(RDF.type, BASE.Module):
-                status = get_module_status(module)
-                if status != BASE.pending:
+            for m in get_all_modules():
+                if get_module_status(m) != BASE.pending:
                     continue
-                deps = get_dependencies(module)
-                if all(get_module_status(dep) == BASE.completed for dep in deps):
-                    ready.append(str(module).split("#")[-1])
+                deps = get_dependencies(m)
+                if all(get_module_status(d) == BASE.completed for d in deps):
+                    ready.append(str(m).split("#")[-1])
             return JSONResponse(jsonrpc_result(id, {
                 "content": [{"type": "text", "text": str(ready)}],
                 "isError": False
@@ -173,15 +202,13 @@ async def mcp(request: Request):
 
         if tool == "update_module_status":
             args = params.get("arguments", {})
-            module_name = args.get("module")
-            status_name = args.get("status")
-            module_uri = BASE[module_name]
-            status_uri = BASE[status_name]
+            module_uri = BASE[args.get("module")]
+            status_uri = BASE[args.get("status")]
             g.remove((module_uri, BASE.hasStatus, None))
             g.add((module_uri, RDF.type, BASE.Module))
             g.add((module_uri, BASE.hasStatus, status_uri))
             return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": f"{module_name} updated to {status_name}"}],
+                "content": [{"type": "text", "text": "Status updated"}],
                 "isError": False
             }))
 
