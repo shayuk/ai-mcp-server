@@ -167,6 +167,52 @@
 :HighStakesAcademic rdfs:comment "If high-stakes academic output then require verification and theoretical anchoring." .
 :UserFrustration rdfs:comment "If user frustration detected then increase clarity and reduce abstraction." .
 
+##########
+# Project Memory Layer
+##########
+
+:Project a owl:Class .
+:Module a owl:Class .
+:Task a owl:Class .
+:Decision a owl:Class .
+
+:hasModule a owl:ObjectProperty .
+:hasTask a owl:ObjectProperty .
+:hasDecision a owl:ObjectProperty .
+:hasStatus a owl:ObjectProperty .
+
+:dependsOnModule a owl:ObjectProperty ;
+    rdf:type owl:TransitiveProperty .
+
+:completed a owl:NamedIndividual .
+:pending a owl:NamedIndividual .
+:inProgress a owl:NamedIndividual .
+
+##########
+# Project Instance
+##########
+
+:UnifiedOntologySystem a :Project ;
+    :hasModule :MCPServer ;
+    :hasModule :ReasoningEngine ;
+    :hasModule :AcademicModule ;
+    :hasModule :ValidationEngine .
+
+:MCPServer a :Module ;
+    :hasStatus :completed .
+
+:ReasoningEngine a :Module ;
+    :hasStatus :completed ;
+    :dependsOnModule :MCPServer .
+
+:AcademicModule a :Module ;
+    :hasStatus :pending ;
+    :dependsOnModule :ReasoningEngine .
+
+:ValidationEngine a :Module ;
+    :hasStatus :pending ;
+    :dependsOnModule :ReasoningEngine .
+
 ################################################################################
 # End of ai_unified_ontology
 ################################################################################
