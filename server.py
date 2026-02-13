@@ -1,3 +1,4 @@
+import sqlite3
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from rdflib import Graph, Namespace, RDF
@@ -6,6 +7,50 @@ from owlrl import DeductiveClosure, OWLRL_Semantics
 app = FastAPI()
 
 BASE = Namespace("http://example.org/ai-unified-ontology#")
+
+DB_PATH = "project_state.db"
+
+# -------------------------
+# Database Setup
+# -------------------------
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS modules (
+            module_name TEXT PRIMARY KEY,
+            status TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_db_status(module_name):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT status FROM modules WHERE module_name=?", (module_name,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def set_db_status(module_name, status):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO modules (module_name, status)
+        VALUES (?, ?)
+        ON CONFLICT(module_name)
+        DO UPDATE SET status=excluded.status
+    """, (module_name, status))
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# -------------------------
+# Load Ontology
+# -------------------------
 
 print("Loading ontology...")
 g = Graph()
@@ -21,26 +66,17 @@ print("Ontology ready.")
 
 MCP_PROTOCOL_VERSION = "2025-03-26"
 
-def jsonrpc_result(id, result):
-    return {"jsonrpc": "2.0", "id": id, "result": result}
-
-def jsonrpc_error(id, code, message):
-    return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
-
 # -------------------------
 # Helpers
 # -------------------------
 
-def get_module_status(module):
-    for _, _, status in g.triples((module, BASE.hasStatus, None)):
-        return status
-    return None
-
-def get_dependencies(module):
-    return [dep for _, _, dep in g.triples((module, BASE.dependsOnModule, None))]
-
 def get_all_modules():
-    return list(g.subjects(RDF.type, BASE.Module))
+    return [str(m).split("#")[-1] for m in g.subjects(RDF.type, BASE.Module)]
+
+def get_dependencies(module_name):
+    module_uri = BASE[module_name]
+    return [str(dep).split("#")[-1]
+            for _, _, dep in g.triples((module_uri, BASE.dependsOnModule, None))]
 
 def detect_cycles():
     graph = {m: get_dependencies(m) for m in get_all_modules()}
@@ -65,23 +101,19 @@ def detect_cycles():
 def compute_next_steps():
     ready = []
     for m in get_all_modules():
-        if get_module_status(m) != BASE.pending:
+        if get_db_status(m) != "pending":
             continue
         deps = get_dependencies(m)
-        if all(get_module_status(d) == BASE.completed for d in deps):
+        if all(get_db_status(d) == "completed" for d in deps):
             ready.append(m)
     return ready
 
-# -------------------------
-# Operational Critical Path
-# -------------------------
-
 def compute_operational_critical_path():
-    modules = get_all_modules()
     graph = {}
-    for m in modules:
-        if get_module_status(m) != BASE.completed:
-            deps = [d for d in get_dependencies(m) if get_module_status(d) != BASE.completed]
+    for m in get_all_modules():
+        if get_db_status(m) != "completed":
+            deps = [d for d in get_dependencies(m)
+                    if get_db_status(d) != "completed"]
             graph[m] = deps
 
     memo = {}
@@ -109,30 +141,18 @@ def compute_operational_critical_path():
         if length > max_overall[0]:
             max_overall = (length, path)
 
-    readable = [str(n).split("#")[-1] for n in max_overall[1]]
-    return {"length": max_overall[0], "path": readable}
-
-# -------------------------
-# Advanced Project State Evaluation
-# -------------------------
+    return {"length": max_overall[0], "path": max_overall[1]}
 
 def evaluate_project_state():
-    modules = get_all_modules()
-
     if detect_cycles():
         return "blocked_by_cycle"
 
-    pending_modules = [m for m in modules if get_module_status(m) == BASE.pending]
+    modules = get_all_modules()
 
-    if not pending_modules:
-        project_uri = BASE["UnifiedOntologySystem"]
-        g.remove((project_uri, BASE.hasStatus, None))
-        g.add((project_uri, BASE.hasStatus, BASE.completed))
+    if all(get_db_status(m) == "completed" for m in modules):
         return "completed"
 
-    next_steps = compute_next_steps()
-
-    if next_steps:
+    if compute_next_steps():
         return "active"
 
     return "stalled"
@@ -149,91 +169,69 @@ async def mcp(request: Request):
     params = body.get("params", {})
 
     if method == "initialize":
-        return JSONResponse(jsonrpc_result(id, {
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": {"tools": {}},
-            "serverInfo": {
-                "name": "ai-mcp-server",
-                "version": "6.0.0"
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {"tools": {}},
+                "serverInfo": {
+                    "name": "ai-mcp-server",
+                    "version": "7.0.0"
+                }
             }
-        }))
+        })
 
     if method == "tools/list":
-        return JSONResponse(jsonrpc_result(id, {
-            "tools": [
-                {"name": "get_node_relations", "description": "Return RDF triples", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}}, "required": ["node"]}},
-                {"name": "update_module_status", "description": "Update module status", "inputSchema": {"type": "object", "properties": {"module": {"type": "string"}, "status": {"type": "string"}}, "required": ["module", "status"]}},
-                {"name": "get_project_next_steps", "description": "Return executable modules", "inputSchema": {"type": "object", "properties": {}}},
-                {"name": "detect_dependency_cycles", "description": "Detect cycles", "inputSchema": {"type": "object", "properties": {}}},
-                {"name": "compute_operational_critical_path", "description": "Compute longest pending dependency path", "inputSchema": {"type": "object", "properties": {}}},
-                {"name": "evaluate_project_state", "description": "Evaluate project lifecycle state", "inputSchema": {"type": "object", "properties": {}}}
-            ]
-        }))
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "tools": [
+                    {"name": "update_module_status"},
+                    {"name": "get_project_next_steps"},
+                    {"name": "detect_dependency_cycles"},
+                    {"name": "compute_operational_critical_path"},
+                    {"name": "evaluate_project_state"}
+                ]
+            }
+        })
 
     if method == "tools/call":
         tool = params.get("name")
-
-        if tool == "evaluate_project_state":
-            result = evaluate_project_state()
-            return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": result}],
-                "isError": False
-            }))
-
-        if tool == "compute_operational_critical_path":
-            if detect_cycles():
-                return JSONResponse(jsonrpc_result(id, {
-                    "content": [{"type": "text", "text": "Cannot compute: cycle detected"}],
-                    "isError": True
-                }))
-            result = compute_operational_critical_path()
-            return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": str(result)}],
-                "isError": False
-            }))
-
-        if tool == "detect_dependency_cycles":
-            return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": str(detect_cycles())}],
-                "isError": False
-            }))
-
-        if tool == "get_project_next_steps":
-            if detect_cycles():
-                return JSONResponse(jsonrpc_result(id, {
-                    "content": [{"type": "text", "text": "Cannot compute next steps: cycle detected"}],
-                    "isError": True
-                }))
-            ready = [str(m).split("#")[-1] for m in compute_next_steps()]
-            return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": str(ready)}],
-                "isError": False
-            }))
+        args = params.get("arguments", {})
 
         if tool == "update_module_status":
-            args = params.get("arguments", {})
-            module_uri = BASE[args.get("module")]
-            status_uri = BASE[args.get("status")]
-            g.remove((module_uri, BASE.hasStatus, None))
-            g.add((module_uri, RDF.type, BASE.Module))
-            g.add((module_uri, BASE.hasStatus, status_uri))
-            return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": "Status updated"}],
-                "isError": False
-            }))
+            set_db_status(args["module"], args["status"])
+            return JSONResponse({"jsonrpc": "2.0", "id": id,
+                                 "result": {"content": [{"type": "text",
+                                                         "text": "Status updated"}],
+                                            "isError": False}})
 
-        if tool == "get_node_relations":
-            args = params.get("arguments", {})
-            node = args.get("node")
-            results = []
-            for s, p, o in g:
-                if str(s).endswith(node) or str(o).endswith(node):
-                    results.append({"subject": str(s), "predicate": str(p), "object": str(o)})
-            return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": str(results)}],
-                "isError": False
-            }))
+        if tool == "get_project_next_steps":
+            return JSONResponse({"jsonrpc": "2.0", "id": id,
+                                 "result": {"content": [{"type": "text",
+                                                         "text": str(compute_next_steps())}],
+                                            "isError": False}})
 
-        return JSONResponse(jsonrpc_error(id, -32602, "Unknown tool"))
+        if tool == "detect_dependency_cycles":
+            return JSONResponse({"jsonrpc": "2.0", "id": id,
+                                 "result": {"content": [{"type": "text",
+                                                         "text": str(detect_cycles())}],
+                                            "isError": False}})
 
-    return JSONResponse(jsonrpc_error(id, -32601, "Method not found"))
+        if tool == "compute_operational_critical_path":
+            return JSONResponse({"jsonrpc": "2.0", "id": id,
+                                 "result": {"content": [{"type": "text",
+                                                         "text": str(compute_operational_critical_path())}],
+                                            "isError": False}})
+
+        if tool == "evaluate_project_state":
+            return JSONResponse({"jsonrpc": "2.0", "id": id,
+                                 "result": {"content": [{"type": "text",
+                                                         "text": evaluate_project_state()}],
+                                            "isError": False}})
+
+    return JSONResponse({"jsonrpc": "2.0", "id": id,
+                         "error": {"code": -32601,
+                                   "message": "Method not found"}})
