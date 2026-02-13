@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from rdflib import Graph, Namespace, URIRef, RDF
+from rdflib import Graph, Namespace, RDF
 from owlrl import DeductiveClosure, OWLRL_Semantics
 
 app = FastAPI()
@@ -28,50 +28,75 @@ def jsonrpc_error(id, code, message):
     return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
 
 # -------------------------
-# Helper functions
+# Helper Functions
 # -------------------------
 
-def get_module_status(module_uri):
-    for _, _, status in g.triples((module_uri, BASE.hasStatus, None)):
+def get_module_status(module):
+    for _, _, status in g.triples((module, BASE.hasStatus, None)):
         return status
     return None
 
-def get_dependencies(module_uri):
-    return [dep for _, _, dep in g.triples((module_uri, BASE.dependsOnModule, None))]
+def get_dependencies(module):
+    return [dep for _, _, dep in g.triples((module, BASE.dependsOnModule, None))]
 
-def build_dependency_graph():
+def build_graph():
     graph = {}
     for module in g.subjects(RDF.type, BASE.Module):
-        deps = get_dependencies(module)
-        graph[module] = deps
+        graph[module] = get_dependencies(module)
     return graph
 
 def detect_cycles():
-    graph = build_dependency_graph()
+    graph = build_graph()
     visited = set()
     stack = set()
-    cycles = []
 
-    def dfs(node, path):
+    def dfs(node):
         if node in stack:
-            cycle_start = path.index(node)
-            cycles.append(path[cycle_start:])
-            return
+            return True
         if node in visited:
-            return
-
+            return False
         visited.add(node)
         stack.add(node)
-
         for neighbor in graph.get(node, []):
-            dfs(neighbor, path + [neighbor])
-
+            if dfs(neighbor):
+                return True
         stack.remove(node)
+        return False
 
+    return any(dfs(node) for node in graph)
+
+def compute_critical_path():
+    graph = build_graph()
+    memo = {}
+
+    def longest_path(node):
+        if node in memo:
+            return memo[node]
+        deps = graph.get(node, [])
+        if not deps:
+            memo[node] = (1, [node])
+            return memo[node]
+        max_length = 0
+        max_path = []
+        for dep in deps:
+            length, path = longest_path(dep)
+            if length > max_length:
+                max_length = length
+                max_path = path
+        memo[node] = (max_length + 1, [node] + max_path)
+        return memo[node]
+
+    max_overall = (0, [])
     for node in graph:
-        dfs(node, [node])
+        length, path = longest_path(node)
+        if length > max_overall[0]:
+            max_overall = (length, path)
 
-    return cycles
+    readable = [str(n).split("#")[-1] for n in max_overall[1]]
+    return {
+        "length": max_overall[0],
+        "path": readable
+    }
 
 # -------------------------
 # MCP Endpoint
@@ -90,159 +115,85 @@ async def mcp(request: Request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "ai-mcp-server",
-                "version": "3.0.0"
+                "version": "4.0.0"
             }
         }))
 
     if method == "tools/list":
         return JSONResponse(jsonrpc_result(id, {
             "tools": [
-                {
-                    "name": "get_node_relations",
-                    "description": "Return RDF triples for a node",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "node": {"type": "string"}
-                        },
-                        "required": ["node"]
-                    }
-                },
-                {
-                    "name": "update_module_status",
-                    "description": "Update or create a module and set its status",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "module": {"type": "string"},
-                            "status": {"type": "string"}
-                        },
-                        "required": ["module", "status"]
-                    }
-                },
-                {
-                    "name": "get_project_next_steps",
-                    "description": "Return modules ready to execute",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {}
-                    }
-                },
-                {
-                    "name": "detect_dependency_cycles",
-                    "description": "Detect circular dependencies between modules",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {}
-                    }
-                }
+                {"name": "get_node_relations", "description": "Return RDF triples", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}}, "required": ["node"]}},
+                {"name": "update_module_status", "description": "Update module status", "inputSchema": {"type": "object", "properties": {"module": {"type": "string"}, "status": {"type": "string"}}, "required": ["module", "status"]}},
+                {"name": "get_project_next_steps", "description": "Return executable modules", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "detect_dependency_cycles", "description": "Detect cycles", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "compute_critical_path", "description": "Compute longest dependency path", "inputSchema": {"type": "object", "properties": {}}}
             ]
         }))
 
     if method == "tools/call":
-        tool_name = params.get("name")
-        args = params.get("arguments", {})
+        tool = params.get("name")
 
-        # ---------------------
-        # Get Node Relations
-        # ---------------------
-        if tool_name == "get_node_relations":
-            node = args.get("node")
-            if not node:
-                return JSONResponse(jsonrpc_error(id, -32602, "Missing 'node'"))
-
-            results = []
-            for s, p, o in g:
-                if str(s).endswith(node) or str(o).endswith(node):
-                    results.append({
-                        "subject": str(s),
-                        "predicate": str(p),
-                        "object": str(o)
-                    })
-
+        if tool == "compute_critical_path":
+            if detect_cycles():
+                return JSONResponse(jsonrpc_result(id, {
+                    "content": [{"type": "text", "text": "Cannot compute critical path: cycle detected"}],
+                    "isError": True
+                }))
+            result = compute_critical_path()
             return JSONResponse(jsonrpc_result(id, {
-                "content": [{"type": "text", "text": str(results)}],
+                "content": [{"type": "text", "text": str(result)}],
                 "isError": False
             }))
 
-        # ---------------------
-        # Update Module Status
-        # ---------------------
-        if tool_name == "update_module_status":
+        if tool == "detect_dependency_cycles":
+            has_cycle = detect_cycles()
+            return JSONResponse(jsonrpc_result(id, {
+                "content": [{"type": "text", "text": str(has_cycle)}],
+                "isError": False
+            }))
+
+        if tool == "get_project_next_steps":
+            if detect_cycles():
+                return JSONResponse(jsonrpc_result(id, {
+                    "content": [{"type": "text", "text": "Cannot compute next steps: cycle detected"}],
+                    "isError": True
+                }))
+            ready = []
+            for module in g.subjects(RDF.type, BASE.Module):
+                status = get_module_status(module)
+                if status != BASE.pending:
+                    continue
+                deps = get_dependencies(module)
+                if all(get_module_status(dep) == BASE.completed for dep in deps):
+                    ready.append(str(module).split("#")[-1])
+            return JSONResponse(jsonrpc_result(id, {
+                "content": [{"type": "text", "text": str(ready)}],
+                "isError": False
+            }))
+
+        if tool == "update_module_status":
+            args = params.get("arguments", {})
             module_name = args.get("module")
             status_name = args.get("status")
-
-            if not module_name or not status_name:
-                return JSONResponse(jsonrpc_error(id, -32602, "Missing arguments"))
-
             module_uri = BASE[module_name]
             status_uri = BASE[status_name]
-
             g.remove((module_uri, BASE.hasStatus, None))
             g.add((module_uri, RDF.type, BASE.Module))
             g.add((module_uri, BASE.hasStatus, status_uri))
-
             return JSONResponse(jsonrpc_result(id, {
-                "content": [{
-                    "type": "text",
-                    "text": f"Module {module_name} updated to {status_name}"
-                }],
+                "content": [{"type": "text", "text": f"{module_name} updated to {status_name}"}],
                 "isError": False
             }))
 
-        # ---------------------
-        # Detect Cycles
-        # ---------------------
-        if tool_name == "detect_dependency_cycles":
-            cycles = detect_cycles()
-
-            readable = []
-            for cycle in cycles:
-                readable.append(
-                    [str(node).split("#")[-1] for node in cycle]
-                )
-
+        if tool == "get_node_relations":
+            args = params.get("arguments", {})
+            node = args.get("node")
+            results = []
+            for s, p, o in g:
+                if str(s).endswith(node) or str(o).endswith(node):
+                    results.append({"subject": str(s), "predicate": str(p), "object": str(o)})
             return JSONResponse(jsonrpc_result(id, {
-                "content": [{
-                    "type": "text",
-                    "text": str(readable)
-                }],
-                "isError": False
-            }))
-
-        # ---------------------
-        # Get Next Steps
-        # ---------------------
-        if tool_name == "get_project_next_steps":
-
-            if detect_cycles():
-                return JSONResponse(jsonrpc_result(id, {
-                    "content": [{
-                        "type": "text",
-                        "text": "Cannot compute next steps: circular dependency detected"
-                    }],
-                    "isError": True
-                }))
-
-            ready_modules = []
-
-            for module in g.subjects(RDF.type, BASE.Module):
-                status = get_module_status(module)
-
-                if status != BASE.pending:
-                    continue
-
-                deps = get_dependencies(module)
-                all_completed = all(get_module_status(dep) == BASE.completed for dep in deps)
-
-                if all_completed:
-                    ready_modules.append(str(module).split("#")[-1])
-
-            return JSONResponse(jsonrpc_result(id, {
-                "content": [{
-                    "type": "text",
-                    "text": str(ready_modules)
-                }],
+                "content": [{"type": "text", "text": str(results)}],
                 "isError": False
             }))
 
