@@ -4,131 +4,75 @@ from rdflib import Graph
 
 app = FastAPI()
 
-# Load ontology (make sure the path matches your repo)
 g = Graph()
 g.parse("ontology/ai_unified_ontology.ttl", format="ttl")
 
-SERVER_NAME = "ai-mcp-server"
-SERVER_VERSION = "0.1.0"
-MCP_PROTOCOL_VERSION = "2025-03-26"  # MCP spec revision we support
+MCP_PROTOCOL_VERSION = "2025-03-26"
 
+def jsonrpc_result(id, result):
+    return {"jsonrpc": "2.0", "id": id, "result": result}
 
-def jsonrpc_result(request_id, result):
-    return {"jsonrpc": "2.0", "id": request_id, "result": result}
-
-
-def jsonrpc_error(request_id, code, message, data=None):
-    err = {"code": code, "message": message}
-    if data is not None:
-        err["data"] = data
-    return {"jsonrpc": "2.0", "id": request_id, "error": err}
-
-
-def get_relations(node: str):
-    if not node:
-        return []
-    results = []
-    for subj, pred, obj in g:
-        if str(subj).endswith(node) or str(obj).endswith(node):
-            results.append(
-                {"subject": str(subj), "predicate": str(pred), "object": str(obj)}
-            )
-    return results
-
-
-@app.get("/")
-def health():
-    return {"status": "ok", "service": SERVER_NAME}
-
+def jsonrpc_error(id, code, message):
+    return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
 
 @app.post("/mcp")
-async def mcp_endpoint(request: Request):
-    payload = await request.json()
+async def mcp(request: Request):
+    body = await request.json()
+    method = body.get("method")
+    id = body.get("id")
+    params = body.get("params", {})
 
-    method = payload.get("method")
-    params = payload.get("params") or {}
-    request_id = payload.get("id")  # may be None for notifications
-
-    # -------------------------
-    # MCP handshake: initialize
-    # -------------------------
     if method == "initialize":
-        client_protocol = params.get("protocolVersion")
-
-        # If client sends a version we don't support, return an MCP-style JSON-RPC error
-        # Spec: server can respond with another supported version.
-        # We'll always respond with MCP_PROTOCOL_VERSION.
-        result = {
+        return JSONResponse(jsonrpc_result(id, {
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {
-                "tools": {"listChanged": False},
-                "resources": {"subscribe": False, "listChanged": False},
-                "prompts": {"listChanged": False},
-                "logging": {},
+                "tools": {},
+                "resources": {},
+                "prompts": {},
+                "logging": {}
             },
-            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-            "instructions": (
-                "This server exposes ontology tools over MCP. "
-                "Use tools/list to discover tools and tools/call to invoke them."
-            ),
-        }
-        return JSONResponse(jsonrpc_result(request_id, result))
+            "serverInfo": {
+                "name": "ai-mcp-server",
+                "version": "1.0.0"
+            }
+        }))
 
-    # Client sends this as a notification after init; no id => no response required
-    if method == "notifications/initialized":
-        return JSONResponse({"jsonrpc": "2.0", "result": True})
-
-    # -------------------------
-    # MCP tools: list + call
-    # -------------------------
     if method == "tools/list":
-        # Minimal tool catalog
-        tools = [
-            {
+        return JSONResponse(jsonrpc_result(id, {
+            "tools": [{
                 "name": "get_node_relations",
-                "description": "Return all RDF triples where a node is subject or object (by local name suffix match).",
+                "description": "Return RDF triples for a node",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "node": {"type": "string", "description": "Node local name, e.g., DevOps"}
+                        "node": {"type": "string"}
                     },
-                    "required": ["node"],
-                },
-            },
-        ]
-
-        result = {"tools": tools, "nextCursor": None}
-        return JSONResponse(jsonrpc_result(request_id, result))
+                    "required": ["node"]
+                }
+            }]
+        }))
 
     if method == "tools/call":
         tool_name = params.get("name")
-        args = params.get("arguments") or {}
+        args = params.get("arguments", {})
 
         if tool_name == "get_node_relations":
-            node = args.get("node", "")
-            triples = get_relations(node)
+            node = args.get("node")
+            results = []
+            for s, p, o in g:
+                if str(s).endswith(node) or str(o).endswith(node):
+                    results.append({
+                        "subject": str(s),
+                        "predicate": str(p),
+                        "object": str(o)
+                    })
 
-            # Tool result per MCP spec: content[] and isError
-            result = {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Found {len(triples)} triples for node '{node}'.",
-                    },
-                    {
-                        "type": "text",
-                        "text": str(triples),
-                    },
-                ],
-                "isError": False,
-            }
-            return JSONResponse(jsonrpc_result(request_id, result))
+            return JSONResponse(jsonrpc_result(id, {
+                "content": [{
+                    "type": "text",
+                    "text": str(results)
+                }],
+                "isError": False
+            }))
 
-        return JSONResponse(
-            jsonrpc_error(request_id, -32602, f"Unknown tool: {tool_name}")
-        )
-
-    # -------------------------
-    # Unknown method
-    # -------------------------
-    return JSONResponse(jsonrpc_error(request_id, -32601, "Method not found"))
+    return JSONResponse(jsonrpc_error(id, -32601, "Method not found"))
