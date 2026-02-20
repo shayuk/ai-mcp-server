@@ -1,7 +1,11 @@
 import sqlite3
 import json
+from typing import Dict, Any
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
 from rdflib import Graph, Namespace, RDF
 from owlrl import DeductiveClosure, OWLRL_Semantics
 
@@ -174,10 +178,6 @@ async def mcp(request: Request):
             }
         })
 
-    # =========================
-    # TOOLS LIST
-    # =========================
-
     if method == "tools/list":
         return JSONResponse({
             "jsonrpc": "2.0",
@@ -227,48 +227,9 @@ async def mcp(request: Request):
             }
         })
 
-    # =========================
-    # TOOLS CALL
-    # =========================
-
     if method == "tools/call":
         tool = params.get("name")
         args = params.get("arguments", {})
-
-        if tool == "update_module_status":
-            set_db_status(args["module"], args["status"])
-            return JSONResponse({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "content": [{"type": "text", "text": "Status updated"}],
-                    "isError": False
-                }
-            })
-
-        if tool == "get_module_statuses":
-            snapshot = [
-                {"module": m, "status": get_db_status(m)}
-                for m in get_all_modules()
-            ]
-            return JSONResponse({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "content": [{"type": "text", "text": str(snapshot)}],
-                    "isError": False
-                }
-            })
-
-        if tool == "evaluate_project_state":
-            return JSONResponse({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "content": [{"type": "text", "text": evaluate_project_state()}],
-                    "isError": False
-                }
-            })
 
         if tool == "validate_research_proposal_structural":
             result_obj = structural_validate(args["proposal"])
@@ -309,10 +270,13 @@ async def mcp(request: Request):
 # REST VALIDATION ENDPOINT
 # =========================
 
-@app.post("/validate_proposal")
-async def validate_proposal(payload: dict):
+class ProposalRequest(BaseModel):
+    proposal: Dict[str, Any]
 
-    proposal = payload.get("proposal", {})
+@app.post("/validate_proposal")
+async def validate_proposal(payload: ProposalRequest):
+
+    proposal = payload.proposal
 
     result_obj = structural_validate(proposal)
     recommendations = generate_recommendations(result_obj)
