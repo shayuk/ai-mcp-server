@@ -304,3 +304,25 @@ async def mcp(request: Request):
             "message": "Method not found"
         }
     })
+
+# =========================
+# REST VALIDATION ENDPOINT
+# =========================
+
+@app.post("/validate_proposal")
+async def validate_proposal(payload: dict):
+
+    proposal = payload.get("proposal", {})
+
+    result_obj = structural_validate(proposal)
+    recommendations = generate_recommendations(result_obj)
+
+    return {
+        "status": "evaluated",
+        "score": result_obj.get("structural_score"),
+        "threshold": 0.95,
+        "critical_failed": result_obj.get("critical_failed", False),
+        "missing_fields": result_obj.get("missing_fields", []),
+        "violations": result_obj.get("violations", []),
+        "recommendations": recommendations
+    }
