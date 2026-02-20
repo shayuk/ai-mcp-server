@@ -9,7 +9,11 @@ from owlrl import DeductiveClosure, OWLRL_Semantics
 from quality.structural_validator import structural_validate
 from quality.recommendations import generate_recommendations
 
-app = FastAPI()
+app = FastAPI(
+    servers=[
+        {"url": "https://ai-mcp-server-1.onrender.com"}
+    ]
+)
 
 BASE = Namespace("http://example.org/ai-unified-ontology#")
 DB_PATH = "project_state.db"
