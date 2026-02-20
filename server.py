@@ -5,8 +5,9 @@ from fastapi.responses import JSONResponse
 from rdflib import Graph, Namespace, RDF
 from owlrl import DeductiveClosure, OWLRL_Semantics
 
-# ← חשוב: חיבור ל-Validator
+# ← חיבור ל-Validator
 from quality.structural_validator import structural_validate
+from quality.recommendations import generate_recommendations
 
 app = FastAPI()
 
@@ -209,7 +210,7 @@ async def mcp(request: Request):
                     },
                     {
                         "name": "validate_research_proposal_structural",
-                        "description": "Validate research proposal structure and compute score",
+                        "description": "Evaluate research proposal quality and return score + recommendations",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -267,11 +268,26 @@ async def mcp(request: Request):
 
         if tool == "validate_research_proposal_structural":
             result_obj = structural_validate(args["proposal"])
+            recommendations = generate_recommendations(result_obj)
+
+            response_payload = {
+                "status": "evaluated",
+                "score": result_obj.get("structural_score"),
+                "threshold": 0.95,
+                "critical_failed": result_obj.get("critical_failed", False),
+                "missing_fields": result_obj.get("missing_fields", []),
+                "violations": result_obj.get("violations", []),
+                "recommendations": recommendations
+            }
+
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
-                    "content": [{"type": "text", "text": json.dumps(result_obj)}],
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps(response_payload)
+                    }],
                     "isError": False
                 }
             })
