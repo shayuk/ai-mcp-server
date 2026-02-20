@@ -1,8 +1,12 @@
 import sqlite3
+import json
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from rdflib import Graph, Namespace, RDF
 from owlrl import DeductiveClosure, OWLRL_Semantics
+
+# ← חשוב: חיבור ל-Validator
+from quality.structural_validator import structural_validate
 
 app = FastAPI()
 
@@ -126,44 +130,6 @@ def compute_next_steps():
             ready.append(m)
     return ready
 
-def compute_operational_critical_path():
-    active_modules = [
-        m for m in get_all_modules()
-        if get_db_status(m) != "completed"
-    ]
-
-    graph = {m: [] for m in active_modules}
-
-    for m in active_modules:
-        for d in get_dependencies(m):
-            if d in active_modules:
-                graph[d].append(m)
-
-    memo = {}
-
-    def longest(node):
-        if node in memo:
-            return memo[node]
-        neighbors = graph.get(node, [])
-        if not neighbors:
-            memo[node] = (1, [node])
-            return memo[node]
-        best_len, best_path = 0, []
-        for n in neighbors:
-            ln, path = longest(n)
-            if ln > best_len:
-                best_len, best_path = ln, path
-        memo[node] = (best_len + 1, [node] + best_path)
-        return memo[node]
-
-    best = (0, [])
-    for n in active_modules:
-        ln, path = longest(n)
-        if ln > best[0]:
-            best = (ln, path)
-
-    return {"length": best[0], "path": best[1]}
-
 def evaluate_project_state():
     if detect_cycles():
         return "blocked_by_cycle"
@@ -203,6 +169,10 @@ async def mcp(request: Request):
             }
         })
 
+    # =========================
+    # TOOLS LIST
+    # =========================
+
     if method == "tools/list":
         return JSONResponse({
             "jsonrpc": "2.0",
@@ -236,10 +206,25 @@ async def mcp(request: Request):
                             "type": "object",
                             "properties": {}
                         }
+                    },
+                    {
+                        "name": "validate_research_proposal_structural",
+                        "description": "Validate research proposal structure and compute score",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "proposal": {"type": "object"}
+                            },
+                            "required": ["proposal"]
+                        }
                     }
                 ]
             }
         })
+
+    # =========================
+    # TOOLS CALL
+    # =========================
 
     if method == "tools/call":
         tool = params.get("name")
@@ -276,6 +261,17 @@ async def mcp(request: Request):
                 "id": id,
                 "result": {
                     "content": [{"type": "text", "text": evaluate_project_state()}],
+                    "isError": False
+                }
+            })
+
+        if tool == "validate_research_proposal_structural":
+            result_obj = structural_validate(args["proposal"])
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(result_obj)}],
                     "isError": False
                 }
             })
