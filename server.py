@@ -9,19 +9,17 @@ from pydantic import BaseModel
 from rdflib import Graph, Namespace, RDF
 from owlrl import DeductiveClosure, OWLRL_Semantics
 
-# ← חיבור ל-Validator
-from quality.structural_validator import structural_validate
-from quality.recommendations import generate_recommendations
+# =========================
+# CONFIG
+# =========================
+
+MCP_PROTOCOL_VERSION = "2025-03-26"
+DB_PATH = "project_state.db"
+BASE = Namespace("http://example.org/ai-unified-ontology#")
 
 app = FastAPI(
-    servers=[
-        {"url": "https://ai-mcp-server-1.onrender.com"}
-    ]
+    servers=[{"url": "https://ai-mcp-server.onrender.com"}]
 )
-
-BASE = Namespace("http://example.org/ai-unified-ontology#")
-DB_PATH = "project_state.db"
-MCP_PROTOCOL_VERSION = "2025-03-26"
 
 # =========================
 # DATABASE LAYER
@@ -68,39 +66,25 @@ init_db()
 print("Loading ontology...")
 g = Graph()
 g.parse("ontology/ai_unified_ontology.ttl", format="ttl")
-print(f"Original triples: {len(g)}")
 
 print("Running OWL RL reasoning...")
 DeductiveClosure(OWLRL_Semantics).expand(g)
-print(f"Triples after reasoning: {len(g)}")
-print("Ontology ready.")
-
-# =========================
-# BOOTSTRAP STATE FROM ONTOLOGY
-# =========================
-
-def bootstrap_module_states():
-    modules = [
-        str(m).split("#")[-1]
-        for m in g.subjects(RDF.type, BASE.Module)
-    ]
-
-    for module in modules:
-        if get_db_status(module) is None:
-            print(f"Initializing {module} → pending")
-            set_db_status(module, "pending")
-
-bootstrap_module_states()
+print(f"Ontology ready. Triples count: {len(g)}")
 
 # =========================
 # GRAPH HELPERS
 # =========================
 
-def get_all_modules():
-    return [
-        str(m).split("#")[-1]
-        for m in g.subjects(RDF.type, BASE.Module)
-    ]
+def get_node_relations(node_name):
+    results = []
+    for s, p, o in g:
+        if str(s).endswith(node_name) or str(o).endswith(node_name):
+            results.append({
+                "subject": str(s),
+                "predicate": str(p),
+                "object": str(o)
+            })
+    return results
 
 def get_dependencies(module_name):
     module_uri = BASE[module_name]
@@ -109,49 +93,80 @@ def get_dependencies(module_name):
         for _, _, dep in g.triples((module_uri, BASE.dependsOnModule, None))
     ]
 
-def detect_cycles():
-    graph = {m: get_dependencies(m) for m in get_all_modules()}
-    visited = set()
-    stack = set()
+def get_transitive_dependencies(module_name, visited=None):
+    if visited is None:
+        visited = set()
 
-    def dfs(node):
-        if node in stack:
-            return True
-        if node in visited:
-            return False
-        visited.add(node)
-        stack.add(node)
-        for neighbor in graph.get(node, []):
-            if dfs(neighbor):
-                return True
-        stack.remove(node)
-        return False
+    deps = get_dependencies(module_name)
+    all_deps = []
 
-    return any(dfs(node) for node in graph)
+    for dep in deps:
+        if dep not in visited:
+            visited.add(dep)
+            all_deps.append(dep)
+            all_deps.extend(get_transitive_dependencies(dep, visited))
 
-def compute_next_steps():
-    ready = []
-    for m in get_all_modules():
-        if get_db_status(m) != "pending":
-            continue
-        deps = get_dependencies(m)
-        if all(get_db_status(d) == "completed" for d in deps):
-            ready.append(m)
-    return ready
+    return list(set(all_deps))
+
+def get_all_modules():
+    return [
+        str(m).split("#")[-1]
+        for m in g.subjects(RDF.type, BASE.Module)
+    ]
+
+# =========================
+# LIFECYCLE LOGIC
+# =========================
 
 def evaluate_project_state():
-    if detect_cycles():
-        return "blocked_by_cycle"
-
     modules = get_all_modules()
 
     if all(get_db_status(m) == "completed" for m in modules):
         return "completed"
 
-    if compute_next_steps():
-        return "active"
+    for m in modules:
+        if get_db_status(m) == "pending":
+            return "active"
 
     return "stalled"
+
+# =========================
+# TOOL ROUTER
+# =========================
+
+def handle_tool_call(tool, args, id):
+
+    # ===== ONTOLOGY MODULE =====
+    if tool == "get_node_relations":
+        node = args.get("node")
+        data = get_node_relations(node)
+        return tool_success(id, data)
+
+    if tool == "get_dependencies":
+        module = args.get("module")
+        data = get_dependencies(module)
+        return tool_success(id, data)
+
+    if tool == "get_transitive_dependencies":
+        module = args.get("module")
+        data = get_transitive_dependencies(module)
+        return tool_success(id, data)
+
+    # ===== LIFECYCLE MODULE =====
+    if tool == "update_module_status":
+        set_db_status(args["module"], args["status"])
+        return tool_success(id, {"status": "updated"})
+
+    if tool == "get_module_statuses":
+        modules = get_all_modules()
+        statuses = {m: get_db_status(m) for m in modules}
+        return tool_success(id, statuses)
+
+    if tool == "evaluate_project_state":
+        state = evaluate_project_state()
+        return tool_success(id, {"project_state": state})
+
+    return tool_error(id, "Tool not found")
 
 # =========================
 # MCP ENDPOINT
@@ -173,7 +188,7 @@ async def mcp(request: Request):
                 "capabilities": {"tools": {}},
                 "serverInfo": {
                     "name": "ai-mcp-server",
-                    "version": "11.0.0"
+                    "version": "12.0.0"
                 }
             }
         })
@@ -184,6 +199,33 @@ async def mcp(request: Request):
             "id": id,
             "result": {
                 "tools": [
+                    {
+                        "name": "get_node_relations",
+                        "description": "Return RDF triples for a node",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"node": {"type": "string"}},
+                            "required": ["node"]
+                        }
+                    },
+                    {
+                        "name": "get_dependencies",
+                        "description": "Return direct dependencies of a module",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"module": {"type": "string"}},
+                            "required": ["module"]
+                        }
+                    },
+                    {
+                        "name": "get_transitive_dependencies",
+                        "description": "Return multi-hop dependencies",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"module": {"type": "string"}},
+                            "required": ["module"]
+                        }
+                    },
                     {
                         "name": "update_module_status",
                         "description": "Update module status",
@@ -199,29 +241,12 @@ async def mcp(request: Request):
                     {
                         "name": "get_module_statuses",
                         "description": "List module statuses",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {}
-                        }
+                        "inputSchema": {"type": "object", "properties": {}}
                     },
                     {
                         "name": "evaluate_project_state",
                         "description": "Evaluate lifecycle state",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {}
-                        }
-                    },
-                    {
-                        "name": "validate_research_proposal_structural",
-                        "description": "Evaluate research proposal quality and return score + recommendations",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "proposal": {"type": "object"}
-                            },
-                            "required": ["proposal"]
-                        }
+                        "inputSchema": {"type": "object", "properties": {}}
                     }
                 ]
             }
@@ -230,63 +255,33 @@ async def mcp(request: Request):
     if method == "tools/call":
         tool = params.get("name")
         args = params.get("arguments", {})
+        return JSONResponse(handle_tool_call(tool, args, id))
 
-        if tool == "validate_research_proposal_structural":
-            result_obj = structural_validate(args["proposal"])
-            recommendations = generate_recommendations(result_obj)
+    return JSONResponse(tool_error(id, "Method not found"))
 
-            response_payload = {
-                "status": "evaluated",
-                "score": result_obj.get("structural_score"),
-                "threshold": 0.95,
-                "critical_failed": result_obj.get("critical_failed", False),
-                "missing_fields": result_obj.get("missing_fields", []),
-                "violations": result_obj.get("violations", []),
-                "recommendations": recommendations
-            }
+# =========================
+# HELPERS
+# =========================
 
-            return JSONResponse({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "content": [{
-                        "type": "text",
-                        "text": json.dumps(response_payload)
-                    }],
-                    "isError": False
-                }
-            })
+def tool_success(id, payload):
+    return {
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "content": [{
+                "type": "text",
+                "text": json.dumps(payload)
+            }],
+            "isError": False
+        }
+    }
 
-    return JSONResponse({
+def tool_error(id, message):
+    return {
         "jsonrpc": "2.0",
         "id": id,
         "error": {
             "code": -32601,
-            "message": "Method not found"
+            "message": message
         }
-    })
-
-# =========================
-# REST VALIDATION ENDPOINT
-# =========================
-
-class ProposalRequest(BaseModel):
-    proposal: Dict[str, Any]
-
-@app.post("/validate_proposal")
-async def validate_proposal(payload: ProposalRequest):
-
-    proposal = payload.proposal
-
-    result_obj = structural_validate(proposal)
-    recommendations = generate_recommendations(result_obj)
-
-    return {
-        "status": "evaluated",
-        "score": result_obj.get("structural_score"),
-        "threshold": 0.95,
-        "critical_failed": result_obj.get("critical_failed", False),
-        "missing_fields": result_obj.get("missing_fields", []),
-        "violations": result_obj.get("violations", []),
-        "recommendations": recommendations
     }
